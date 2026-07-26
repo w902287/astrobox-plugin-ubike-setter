@@ -120,6 +120,37 @@ fn urlencode(s: &str) -> String {
     out
 }
 
+/// Read the real phone GPS position uploaded by an iOS Shortcut / Android
+/// automation to the Worker: GET /api/loc?key=<device-bound key>.
+/// Returns (lat, lng, age_seconds).
+pub fn fetch_shortcut_location(key: &str) -> Result<(f64, f64, i64), String> {
+    let url = format!(
+        "https://youbike-band.w902287.workers.dev/api/loc?key={}",
+        urlencode(key)
+    );
+    let resp = Client::new()
+        .get(&url)
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .send()
+        .map_err(|e| format!("連線失敗: {e}"))?;
+    if resp.status_code() == 404 {
+        return Err("尚未收到手機定位，請先執行捷徑".to_string());
+    }
+    if resp.status_code() != 200 {
+        return Err(format!("HTTP {}", resp.status_code()));
+    }
+    let body = resp.body().map_err(|e| format!("讀取失敗: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|e| format!("格式錯誤: {e}"))?;
+    let lat = v.get("lat").and_then(value_to_f64).unwrap_or_default();
+    let lng = v.get("lng").and_then(value_to_f64).unwrap_or_default();
+    let age = v.get("age_seconds").and_then(|x| x.as_i64()).unwrap_or(0);
+    if lat == 0.0 || lng == 0.0 {
+        return Err("座標為空".to_string());
+    }
+    Ok((lat, lng, age))
+}
+
 /// IP-based geolocation (the plugin host exposes no GPS API). Tries two free
 /// endpoints. Returns (lat, lng, description). Accuracy is block-to-km level.
 pub fn locate_by_ip() -> Result<(f64, f64, String), String> {

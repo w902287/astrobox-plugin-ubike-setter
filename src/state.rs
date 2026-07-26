@@ -21,6 +21,9 @@ pub struct Coord {
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub coords: [Option<Coord>; 3],
+    /// Stable key binding this plugin install to phone-GPS uploads (/api/loc).
+    #[serde(default)]
+    pub loc_key: String,
 }
 
 pub struct AppState {
@@ -62,6 +65,26 @@ pub fn load() {
         .unwrap_or_default();
     let mut st = state().lock().unwrap_or_else(|p| p.into_inner());
     st.config = cfg;
+    if st.config.loc_key.is_empty() {
+        // pseudo-random 12-char key from time + addresses; good enough for a
+        // per-install binding token.
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let chars: Vec<char> = "abcdefghjkmnpqrstuvwxyz23456789".chars().collect();
+        let mut key = String::new();
+        let mut x = seed ^ 0x9e3779b97f4a7c15;
+        for _ in 0..12 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            key.push(chars[(x as usize) % chars.len()]);
+        }
+        st.config.loc_key = key;
+        drop(st);
+        save();
+    }
 }
 
 pub fn save() {

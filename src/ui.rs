@@ -136,37 +136,56 @@ fn do_search() {
 }
 
 fn do_locate() {
-    state::set_notice("定位中…（使用手機網路 IP，精度約公里級）");
+    let key = {
+        let st = state::state().lock().unwrap_or_else(|p| p.into_inner());
+        st.config.loc_key.clone()
+    };
+    state::set_notice("讀取手機定位中…");
+    rerender();
+    // 1) real phone GPS uploaded via Shortcut
+    if let Ok((lat, lng, age)) = stations::fetch_shortcut_location(&key) {
+        if age <= 600 {
+            apply_location(lat, lng, format!("手機 GPS（{age} 秒前）"));
+            return;
+        }
+    }
+    // 2) fallback: IP geolocation
+    state::set_notice("沒有近期手機定位，改用 IP 定位（公里級）…");
     rerender();
     match stations::locate_by_ip() {
-        Ok((lat, lng, desc)) => {
-            let scenario = {
-                let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
-                let idx = st.selected_scenario;
-                st.config.coords[idx] = Some(Coord {
-                    lat,
-                    lng,
-                    label: format!("目前位置 {:.4},{:.4}", lat, lng),
-                });
-                st.results.clear();
-                idx
-            };
-            state::save();
-            state::push_config_to("");
-            let preview = stations::nearby(lat, lng, 4).unwrap_or_default();
-            let preview_text = preview
-                .iter()
-                .map(|(n, _b, _d, dist)| format!("{}（{}m）", n, dist))
-                .collect::<Vec<_>>()
-                .join("；");
-            state::set_notice(format!(
-                "{}已設為{}並推送。附近：{}",
-                SCENARIO_NAMES[scenario], desc,
-                if preview_text.is_empty() { "讀取中".to_string() } else { preview_text }
-            ));
+        Ok((lat, lng, desc)) => apply_location(lat, lng, desc),
+        Err(err) => {
+            state::set_notice(format!("定位失敗：{err}，請改用搜尋"));
+            rerender();
         }
-        Err(err) => state::set_notice(format!("定位失敗：{err}，請改用搜尋")),
     }
+}
+
+fn apply_location(lat: f64, lng: f64, desc: String) {
+    let scenario = {
+        let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
+        let idx = st.selected_scenario;
+        st.config.coords[idx] = Some(Coord {
+            lat,
+            lng,
+            label: format!("目前位置 {:.4},{:.4}", lat, lng),
+        });
+        st.results.clear();
+        idx
+    };
+    state::save();
+    state::push_config_to("");
+    let preview = stations::nearby(lat, lng, 4).unwrap_or_default();
+    let preview_text = preview
+        .iter()
+        .map(|(n, _b, _d, dist)| format!("{}（{}m）", n, dist))
+        .collect::<Vec<_>>()
+        .join("；");
+    state::set_notice(format!(
+        "{}已設為{}並推送。附近：{}",
+        SCENARIO_NAMES[scenario], desc,
+        if preview_text.is_empty() { "讀取中".to_string() } else { preview_text }
+    ));
     rerender();
 }
 
@@ -351,6 +370,17 @@ fn build_ui() -> ui::Element {
         .child(push_btn)
         .child(clear_btn);
 
+    let shortcut_hint = {
+        let key = st.config.loc_key.clone();
+        let text = format!(
+            "手機GPS捷徑：用 iOS 捷徑「取得目前位置」後，以 POST 送到 https://youbike-band.w902287.workers.dev/api/loc（JSON：key={key}、lat、lng），再按「目前位置」即用真 GPS。"
+        );
+        ui::Element::new(ui::ElementType::P, Some(text.as_str()))
+            .size(11)
+            .text_color(C_MUTED)
+            .margin_top(10)
+    };
+
     let mut root = ui::Element::new(ui::ElementType::Div, None)
         .flex()
         .flex_direction(ui::FlexDirection::Column)
@@ -366,6 +396,6 @@ fn build_ui() -> ui::Element {
     if let Some(n) = notice_el {
         root = root.child(n);
     }
-    root = root.child(results_col).child(actions);
+    root = root.child(results_col).child(actions).child(shortcut_hint);
     root
 }
