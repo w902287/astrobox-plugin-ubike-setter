@@ -11,6 +11,7 @@ const EV_QUERY: &str = "query_input";
 const EV_SEARCH: &str = "do_search";
 const EV_PUSH: &str = "push_now";
 const EV_CLEAR: &str = "clear_current";
+const EV_LOCATE: &str = "locate_me";
 const EV_PICK_PREFIX: &str = "pick_";
 
 const C_BG: &str = "#101914";
@@ -45,6 +46,7 @@ pub fn handle_ui_event(event_id: &str, ev: ui::Event, payload: &str) {
             EV_TAB1 => set_tab(1),
             EV_TAB2 => set_tab(2),
             EV_SEARCH => do_search(),
+            EV_LOCATE => do_locate(),
             EV_PUSH => {
                 state::push_config_to("");
                 state::set_notice("已推送設定到手環");
@@ -129,6 +131,41 @@ fn do_search() {
         Err(err) => {
             state::set_notice(format!("搜尋失敗：{err}"));
         }
+    }
+    rerender();
+}
+
+fn do_locate() {
+    state::set_notice("定位中…（使用手機網路 IP，精度約公里級）");
+    rerender();
+    match stations::locate_by_ip() {
+        Ok((lat, lng, desc)) => {
+            let scenario = {
+                let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
+                let idx = st.selected_scenario;
+                st.config.coords[idx] = Some(Coord {
+                    lat,
+                    lng,
+                    label: format!("目前位置 {:.4},{:.4}", lat, lng),
+                });
+                st.results.clear();
+                idx
+            };
+            state::save();
+            state::push_config_to("");
+            let preview = stations::nearby(lat, lng, 4).unwrap_or_default();
+            let preview_text = preview
+                .iter()
+                .map(|(n, _b, _d, dist)| format!("{}（{}m）", n, dist))
+                .collect::<Vec<_>>()
+                .join("；");
+            state::set_notice(format!(
+                "{}已設為{}並推送。附近：{}",
+                SCENARIO_NAMES[scenario], desc,
+                if preview_text.is_empty() { "讀取中".to_string() } else { preview_text }
+            ));
+        }
+        Err(err) => state::set_notice(format!("定位失敗：{err}，請改用搜尋")),
     }
     rerender();
 }
@@ -253,13 +290,19 @@ fn build_ui() -> ui::Element {
         .text_color(C_DARK_TEXT)
         .radius(10)
         .on(ui::Event::Click, EV_SEARCH);
+    let locate_btn = ui::Element::new(ui::ElementType::Button, Some("目前位置"))
+        .bg(C_CARD)
+        .text_color(C_TEXT)
+        .radius(10)
+        .on(ui::Event::Click, EV_LOCATE);
     let search_row = ui::Element::new(ui::ElementType::Div, None)
         .flex()
         .flex_direction(ui::FlexDirection::Row)
         .gap(8)
         .margin_top(10)
         .child(input)
-        .child(search_btn);
+        .child(search_btn)
+        .child(locate_btn);
 
     // Notice
     let notice_el = st.notice.as_ref().map(|n| {

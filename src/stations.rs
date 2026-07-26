@@ -120,6 +120,50 @@ fn urlencode(s: &str) -> String {
     out
 }
 
+/// IP-based geolocation (the plugin host exposes no GPS API). Tries two free
+/// endpoints. Returns (lat, lng, description). Accuracy is block-to-km level.
+pub fn locate_by_ip() -> Result<(f64, f64, String), String> {
+    // 1) ipapi.co — HTTPS, no key
+    if let Ok(resp) = Client::new()
+        .get("https://ipapi.co/json/")
+        .header("User-Agent", "ubike-setter-plugin/0.2 (astrobox)")
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .send()
+    {
+        if resp.status_code() == 200 {
+            if let Ok(body) = resp.body() {
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body) {
+                    let lat = v.get("latitude").and_then(value_to_f64).unwrap_or_default();
+                    let lng = v.get("longitude").and_then(value_to_f64).unwrap_or_default();
+                    if lat != 0.0 && lng != 0.0 {
+                        let city = v.get("city").and_then(|x| x.as_str()).unwrap_or("");
+                        return Ok((lat, lng, format!("IP 定位（{city}）")));
+                    }
+                }
+            }
+        }
+    }
+    // 2) ip-api.com fallback (HTTP only on free tier, still fine for coords)
+    let resp = Client::new()
+        .get("http://ip-api.com/json/?fields=status,lat,lon,city")
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .send()
+        .map_err(|e| format!("定位服務連線失敗: {e}"))?;
+    let body = resp.body().map_err(|e| format!("讀取失敗: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|e| format!("格式錯誤: {e}"))?;
+    if v.get("status").and_then(|x| x.as_str()) != Some("success") {
+        return Err("IP 定位失敗".to_string());
+    }
+    let lat = v.get("lat").and_then(value_to_f64).unwrap_or_default();
+    let lng = v.get("lon").and_then(value_to_f64).unwrap_or_default();
+    if lat == 0.0 || lng == 0.0 {
+        return Err("IP 定位回傳空座標".to_string());
+    }
+    let city = v.get("city").and_then(|x| x.as_str()).unwrap_or("");
+    Ok((lat, lng, format!("IP 定位（{city}）")))
+}
+
 /// Fetch nearest `count` stations around a coordinate:
 /// (name, bikes, docks, dist_m). Used for both the plugin preview list and
 /// the band reply.
