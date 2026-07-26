@@ -13,6 +13,7 @@ const EV_PUSH: &str = "push_now";
 const EV_CLEAR: &str = "clear_current";
 const EV_LOCATE: &str = "locate_me";
 const EV_RUN_SHORTCUT: &str = "run_shortcut";
+const EV_TRIGGER_INPUT: &str = "trigger_input";
 const EV_PICK_PREFIX: &str = "pick_";
 
 const C_BG: &str = "#101914";
@@ -77,6 +78,13 @@ pub fn handle_ui_event(event_id: &str, ev: ui::Event, payload: &str) {
                 let text = extract_input_value(payload);
                 let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
                 st.query = text;
+            } else if event_id == EV_TRIGGER_INPUT {
+                let text = extract_input_value(payload);
+                {
+                    let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
+                    st.config.android_trigger_url = text.trim().to_string();
+                }
+                state::save();
             }
         }
         _ => {}
@@ -139,12 +147,33 @@ fn do_search() {
 
 fn run_shortcut() {
     use crate::astrobox::psys_host::dialog;
-    {
-        let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
-        st.awaiting_gps = true;
+    let (platform, trigger) = {
+        let st = state::state().lock().unwrap_or_else(|p| p.into_inner());
+        (st.platform.clone(), st.config.android_trigger_url.clone())
+    };
+    let is_android = platform.contains("android");
+    if is_android {
+        if trigger.is_empty() {
+            state::set_notice(
+                "Android：請先在下方「自動化觸發連結」填入 HTTP Shortcuts 的觸發網址（見底部說明）",
+            );
+            rerender();
+            return;
+        }
+        {
+            let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
+            st.awaiting_gps = true;
+        }
+        dialog::open_url(trigger.as_str());
+        state::set_notice("已喚起定位任務；完成後回到本頁會自動套用");
+    } else {
+        {
+            let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
+            st.awaiting_gps = true;
+        }
+        dialog::open_url("shortcuts://run-shortcut?name=UbikeGPS");
+        state::set_notice("已喚起「UbikeGPS」捷徑取得定位；回到本頁會自動套用");
     }
-    dialog::open_url("shortcuts://run-shortcut?name=UbikeGPS");
-    state::set_notice("已喚起「UbikeGPS」捷徑取得定位；回到本頁會自動套用");
     rerender();
 }
 
@@ -410,15 +439,46 @@ fn build_ui() -> ui::Element {
         .child(push_btn)
         .child(clear_btn);
 
+    let is_android = st.platform.contains("android");
     let shortcut_hint = {
         let key = st.config.loc_key.clone();
-        let text = format!(
-            "手機GPS：建立名為 UbikeGPS 的捷徑（取得目前位置 → POST 到 /api/loc，key={key}）。按「手機定位」會自動執行捷徑，回來按「目前位置」套用。"
-        );
+        let text = if is_android {
+            format!(
+                "Android 手機GPS：安裝 HTTP Shortcuts，建一個「取得定位後 POST」的捷徑（POST https://youbike-band.w902287.workers.dev/api/loc，JSON：key={key}、lat={{location.latitude}}、lng={{location.longitude}}），長按捷徑→「觸發連結」複製後貼到下方欄位。"
+            )
+        } else {
+            format!(
+                "iOS 手機GPS：建立名為 UbikeGPS 的捷徑（取得目前位置 → POST 到 /api/loc，key={key}）。按「手機定位」自動執行並回來套用。"
+            )
+        };
         ui::Element::new(ui::ElementType::P, Some(text.as_str()))
             .size(11)
             .text_color(C_MUTED)
             .margin_top(10)
+    };
+    let android_trigger_row = if is_android {
+        let input = ui::Element::new(
+            ui::ElementType::Input,
+            Some(st.config.android_trigger_url.as_str()),
+        )
+        .prop("placeholder", "貼上 HTTP Shortcuts 觸發連結（http-shortcuts://...）")
+        .width_full()
+        .on(ui::Event::Input, EV_TRIGGER_INPUT)
+        .on(ui::Event::Change, EV_TRIGGER_INPUT);
+        Some(
+            ui::Element::new(ui::ElementType::Div, None)
+                .flex()
+                .flex_direction(ui::FlexDirection::Column)
+                .margin_top(6)
+                .child(
+                    ui::Element::new(ui::ElementType::P, Some("自動化觸發連結（Android）"))
+                        .size(12)
+                        .text_color(C_MUTED),
+                )
+                .child(input),
+        )
+    } else {
+        None
     };
 
     let mut root = ui::Element::new(ui::ElementType::Div, None)
@@ -437,5 +497,8 @@ fn build_ui() -> ui::Element {
         root = root.child(n);
     }
     root = root.child(results_col).child(actions).child(shortcut_hint);
+    if let Some(row) = android_trigger_row {
+        root = root.child(row);
+    }
     root
 }

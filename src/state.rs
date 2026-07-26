@@ -24,10 +24,16 @@ pub struct Config {
     /// Stable key binding this plugin install to phone-GPS uploads (/api/loc).
     #[serde(default)]
     pub loc_key: String,
+    /// Android automation deep link (HTTP Shortcuts / Tasker / MacroDroid)
+    /// that runs the GPS-upload task. iOS uses shortcuts:// with a fixed name.
+    #[serde(default)]
+    pub android_trigger_url: String,
 }
 
 pub struct AppState {
     pub config: Config,
+    /// Host platform string from os.platform(): "android" / "ios" / ...
+    pub platform: String,
     pub devices: Vec<(String, String)>,
     /// Place search results: (display_name, lat, lng)
     pub results: Vec<(String, f64, f64)>,
@@ -48,6 +54,7 @@ pub fn state() -> &'static Mutex<AppState> {
     STATE.get_or_init(|| {
         Mutex::new(AppState {
             config: Config::default(),
+            platform: String::new(),
             devices: Vec::new(),
             results: Vec::new(),
             preview: String::new(),
@@ -62,6 +69,11 @@ pub fn state() -> &'static Mutex<AppState> {
 }
 
 pub fn load() {
+    let platform = wit_bindgen::block_on(crate::astrobox::psys_host::os::platform().into_future());
+    {
+        let mut st = state().lock().unwrap_or_else(|p| p.into_inner());
+        st.platform = platform.to_lowercase();
+    }
     let cfg = fs::read_to_string(CONFIG_PATH)
         .ok()
         .and_then(|s| serde_json::from_str::<Config>(&s).ok())
