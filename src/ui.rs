@@ -147,32 +147,27 @@ fn do_search() {
 
 fn run_shortcut() {
     use crate::astrobox::psys_host::dialog;
-    let (platform, trigger) = {
+    let (key, trigger) = {
         let st = state::state().lock().unwrap_or_else(|p| p.into_inner());
-        (st.platform.clone(), st.config.android_trigger_url.clone())
+        (st.config.loc_key.clone(), st.config.android_trigger_url.clone())
     };
-    let is_android = platform.contains("android");
-    if is_android {
-        if trigger.is_empty() {
-            state::set_notice(
-                "Android：請先在下方「自動化觸發連結」填入 HTTP Shortcuts 的觸發網址（見底部說明）",
-            );
-            rerender();
-            return;
-        }
-        {
-            let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
-            st.awaiting_gps = true;
-        }
+    {
+        let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
+        st.awaiting_gps = true;
+    }
+    if !trigger.is_empty() {
+        // Power users may configure a custom automation deep link
+        // (HTTP Shortcuts / Tasker / iOS shortcuts://) that replaces the page.
         dialog::open_url(trigger.as_str());
-        state::set_notice("已喚起定位任務；完成後回到本頁會自動套用");
+        state::set_notice("已喚起自訂定位任務；完成後回到本頁會自動套用");
     } else {
-        {
-            let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
-            st.awaiting_gps = true;
-        }
-        dialog::open_url("shortcuts://run-shortcut?name=UbikeGPS");
-        state::set_notice("已喚起「UbikeGPS」捷徑取得定位；回到本頁會自動套用");
+        // Default: browser locate page — zero install, works on iOS & Android.
+        let url = format!(
+            "https://youbike-band.w902287.workers.dev/loc?key={}",
+            key
+        );
+        dialog::open_url(url.as_str());
+        state::set_notice("已開啟定位網頁；允許定位並看到 ✓ 後切回本頁即自動套用");
     }
     rerender();
 }
@@ -439,29 +434,19 @@ fn build_ui() -> ui::Element {
         .child(push_btn)
         .child(clear_btn);
 
-    let is_android = st.platform.contains("android");
     let shortcut_hint = {
-        let key = st.config.loc_key.clone();
-        let text = if is_android {
-            format!(
-                "Android 手機GPS：安裝 HTTP Shortcuts，建一個「取得定位後 POST」的捷徑（POST https://youbike-band.w902287.workers.dev/api/loc，JSON：key={key}、lat={{location.latitude}}、lng={{location.longitude}}），長按捷徑→「觸發連結」複製後貼到下方欄位。"
-            )
-        } else {
-            format!(
-                "iOS 手機GPS：建立名為 UbikeGPS 的捷徑（取得目前位置 → POST 到 /api/loc，key={key}）。按「手機定位」自動執行並回來套用。"
-            )
-        };
+        let text = "手機定位免安裝：按「手機定位」會開啟定位網頁（瀏覽器內建 GPS），允許定位並看到 ✓ 後切回本頁即自動套用。進階：下方可填自訂自動化連結（iOS shortcuts:// 或 HTTP Shortcuts）取代網頁。".to_string();
         ui::Element::new(ui::ElementType::P, Some(text.as_str()))
             .size(11)
             .text_color(C_MUTED)
             .margin_top(10)
     };
-    let android_trigger_row = if is_android {
+    let android_trigger_row = {
         let input = ui::Element::new(
             ui::ElementType::Input,
             Some(st.config.android_trigger_url.as_str()),
         )
-        .prop("placeholder", "貼上 HTTP Shortcuts 觸發連結（http-shortcuts://...）")
+        .prop("placeholder", "選填：自訂觸發連結（shortcuts:// 或 http-shortcuts://）")
         .width_full()
         .on(ui::Event::Input, EV_TRIGGER_INPUT)
         .on(ui::Event::Change, EV_TRIGGER_INPUT);
@@ -470,15 +455,8 @@ fn build_ui() -> ui::Element {
                 .flex()
                 .flex_direction(ui::FlexDirection::Column)
                 .margin_top(6)
-                .child(
-                    ui::Element::new(ui::ElementType::P, Some("自動化觸發連結（Android）"))
-                        .size(12)
-                        .text_color(C_MUTED),
-                )
                 .child(input),
         )
-    } else {
-        None
     };
 
     let mut root = ui::Element::new(ui::ElementType::Div, None)
