@@ -264,6 +264,59 @@ pub fn reply_stations(addr: &str, scenario: usize) {
     }
 }
 
+/// Scenario 3 = "nearby": use the freshest phone GPS uploaded via /api/loc.
+/// Falls back to a clear error the band can show when no recent fix exists.
+pub fn reply_nearby_gps(addr: &str) {
+    fn send_json(addr: &str, value: serde_json::Value) {
+        use crate::astrobox::psys_host::interconnect;
+        let text = value.to_string();
+        let _ = wit_bindgen::block_on(
+            interconnect::send_qaic_message(addr, crate::QA_PKG, &text).into_future(),
+        );
+    }
+
+    let key = {
+        let st = crate::state::state().lock().unwrap_or_else(|p| p.into_inner());
+        st.config.loc_key.clone()
+    };
+    match fetch_shortcut_location(&key) {
+        Ok((lat, lng, age)) if age <= 900 => match nearby(lat, lng, 4) {
+            Ok(rows) => {
+                let stations: Vec<serde_json::Value> = rows
+                    .iter()
+                    .map(|(name, bikes, docks, dist)| {
+                        serde_json::json!({"name": name, "bikes": bikes, "docks": docks, "dist": dist})
+                    })
+                    .collect();
+                let mins = age / 60;
+                let label = if mins <= 0 {
+                    "附近（剛剛定位）".to_string()
+                } else {
+                    format!("附近（{mins} 分鐘前定位）")
+                };
+                send_json(
+                    addr,
+                    serde_json::json!({
+                        "tag": "stations",
+                        "scenario": 3,
+                        "stations": stations,
+                        "source": label,
+                    }),
+                );
+            }
+            Err(err) => {
+                send_json(addr, serde_json::json!({"tag":"stations","scenario":3,"error":err}));
+            }
+        },
+        Ok((_, _, _)) => {
+            send_json(addr, serde_json::json!({"tag":"stations","scenario":3,"error":"no-recent-gps"}));
+        }
+        Err(_) => {
+            send_json(addr, serde_json::json!({"tag":"stations","scenario":3,"error":"no-recent-gps"}));
+        }
+    }
+}
+
 fn haversine_km(a_lat: f64, a_lng: f64, b_lat: f64, b_lng: f64) -> f64 {
     let r = 6371.0_f64;
     let dx = (b_lat - a_lat).to_radians();

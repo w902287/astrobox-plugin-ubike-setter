@@ -101,8 +101,12 @@ fn handle_interconnect(payload: &str) {
                 .get("scenario")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0)
-                .min(2) as usize;
-            stations::reply_stations(&addr, scenario);
+                .min(3) as usize;
+            if scenario == 3 {
+                stations::reply_nearby_gps(&addr);
+            } else {
+                stations::reply_stations(&addr, scenario);
+            }
         }
         _ => {}
     }
