@@ -1,0 +1,34 @@
+name: build-abp
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust with wasm32-wasip2
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add wasm32-wasip2
+
+      - name: Build wasm
+        run: cargo build --target wasm32-wasip2 --release
+
+      - name: Package .abp
+        run: |
+          mkdir -p dist
+          cp target/wasm32-wasip2/release/astrobox_plugin_ubike_setter.wasm dist/
+          cp manifest.json icon.png dist/
+          cd dist
+          zip -r ../ubike-setter.abp .
+          cd ..
+          sha256sum ubike-setter.abp
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ubike-setter-abp
+          path: ubike-setter.abp

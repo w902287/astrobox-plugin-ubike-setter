@@ -1,0 +1,18 @@
+{
+    "name": "Ubike助手設定",
+    "icon": "icon.png",
+    "version": "0.1.0",
+    "description": "直接在 AstroBox 裡設定 Ubike助手 的住家/公司/車站地點，選站點即推送到手環，無需網頁配對。",
+    "author": "w902287",
+    "website": "https://github.com/w902287/astrobox-plugin-ubike-setter",
+    "entry": "astrobox_plugin_ubike_setter.wasm",
+    "wasi_version": 2,
+    "api_level": 3,
+    "permissions": [
+        "network",
+        "interconnect",
+        "register_interconnect_recv",
+        "device"
+    ],
+    "additional_files": []
+}
