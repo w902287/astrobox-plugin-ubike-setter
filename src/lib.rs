@@ -90,9 +90,20 @@ fn handle_interconnect(payload: &str) {
         Err(_) => return,
     };
     let tag = inner.get("tag").and_then(|v| v.as_str()).unwrap_or("");
-    if tag == "cfg-pull" {
-        tracing::info!("quick app requested config");
-        state::push_config_to(&addr);
+    match tag {
+        "cfg-pull" => {
+            tracing::info!("quick app requested config");
+            state::push_config_to(&addr);
+        }
+        "stations-pull" => {
+            let scenario = inner
+                .get("scenario")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                .min(2) as usize;
+            stations::reply_stations(&addr, scenario);
+        }
+        _ => {}
     }
 }
 
