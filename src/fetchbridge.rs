@@ -6,6 +6,8 @@
 //! replacement for the FetchBridge plugin for `tw.youbike.band`, so the old
 //! Worker-based RPK keeps working and no second plugin is needed.
 
+use std::str::FromStr;
+
 use serde_json::{json, Map, Value};
 use waki::{Client, Method};
 
@@ -69,7 +71,15 @@ pub fn handle_fetch(addr: &str, req: Value) {
         .request(m, &url)
         .connect_timeout(std::time::Duration::from_secs(15));
     if !headers.is_empty() {
-        builder = builder.headers(headers.clone());
+        let pairs: Vec<(http::header::HeaderName, String)> = headers
+            .iter()
+            .filter_map(|(k, v)| {
+                http::header::HeaderName::from_str(k.as_str())
+                    .ok()
+                    .map(|name| (name, v.clone()))
+            })
+            .collect();
+        builder = builder.headers(pairs);
     }
     if let Some(b) = body {
         builder = builder.body(b.into_bytes());
