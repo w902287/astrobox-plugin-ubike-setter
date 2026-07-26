@@ -113,13 +113,15 @@ fn do_search() {
     }
     state::set_notice("搜尋地點中…");
     rerender();
-    match stations::geocode(&query, 6) {
-        Ok(results) => {
+    match stations::geocode_smart(&query, 6) {
+        Ok((results, used)) => {
             let count = results.len();
             let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
             st.results = results;
             st.notice = if count == 0 {
-                Some("找不到這個地點，換個關鍵字試試".to_string())
+                Some("找不到這個地點；完整地址可試著只留到「號」或用路口／地標".to_string())
+            } else if let Some(used) = used {
+                Some(format!("原地址查無，已用「{used}」找到 {count} 個結果，點選即設定"))
             } else {
                 Some(format!("找到 {count} 個地點，點選即設定並推送"))
             };
@@ -242,7 +244,7 @@ fn build_ui() -> ui::Element {
 
     // Search row
     let input = ui::Element::new(ui::ElementType::Input, Some(st.query.as_str()))
-        .prop("placeholder", "輸入地點，例如 市政府、台北車站")
+        .prop("placeholder", "地點或地址：市政府／信義區市府路45號")
         .width_full()
         .on(ui::Event::Input, EV_QUERY)
         .on(ui::Event::Change, EV_QUERY);

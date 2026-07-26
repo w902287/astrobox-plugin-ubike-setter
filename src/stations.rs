@@ -55,6 +55,57 @@ fn shorten_display_name(name: &str) -> String {
     parts.join("・")
 }
 
+/// Address-aware search. Full Taiwanese addresses (with floor/room suffixes)
+/// often miss on Nominatim, so retry with progressively simplified forms:
+/// full query -> cut after "號" (drop floor/room) -> drop house number (road
+/// level). Returns (results, used_query_if_different_from_input).
+pub fn geocode_smart(
+    keyword: &str,
+    limit: usize,
+) -> Result<(Vec<(String, f64, f64)>, Option<String>), String> {
+    let original = keyword.trim();
+    let first = geocode(original, limit)?;
+    if !first.is_empty() {
+        return Ok((first, None));
+    }
+    for cand in simplify_candidates(original) {
+        if cand == original {
+            continue;
+        }
+        if let Ok(r) = geocode(&cand, limit) {
+            if !r.is_empty() {
+                return Ok((r, Some(cand)));
+            }
+        }
+    }
+    Ok((Vec::new(), None))
+}
+
+fn simplify_candidates(q: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(pos) = q.find('號') {
+        // 1) keep up to 號: drops 樓/室/之X after the house number
+        let cut = &q[..pos + '號'.len_utf8()];
+        out.push(cut.to_string());
+        // 2) drop the house number itself -> road level
+        let road = cut
+            .trim_end_matches('號')
+            .trim_end_matches(|c: char| {
+                c.is_ascii_digit()
+                    || ('０'..='９').contains(&c)
+                    || c == '之'
+                    || c == '-'
+                    || c == '－'
+            })
+            .trim_end_matches(['巷', '弄'])
+            .trim_end_matches(|c: char| c.is_ascii_digit() || ('０'..='９').contains(&c));
+        if !road.is_empty() && road != cut {
+            out.push(road.to_string());
+        }
+    }
+    out
+}
+
 fn urlencode(s: &str) -> String {
     let mut out = String::new();
     for b in s.as_bytes() {
