@@ -63,8 +63,8 @@ impl event::Guest for UbikeSetter {
         ui::render_root(&element_id);
         let (writer, reader) = wit_future::new::<()>(|| ());
         wit_bindgen::spawn(async move {
-            state::refresh_devices();
-            ui::auto_pull_gps_if_awaiting();
+            state::refresh_devices_async().await;
+            ui::auto_pull_gps_if_awaiting().await;
             ui::rerender();
             let _ = writer.write(()).await;
         });
@@ -145,7 +145,7 @@ impl lifecycle::Guest for UbikeSetter {
             .try_init();
         state::load();
         wit_bindgen::spawn(async move {
-            state::force_refresh_devices();
+            state::refresh_devices_async().await;
             tracing::info!("Ubike Setter: devices registered");
         });
         tracing::info!("Ubike Setter plugin loaded");

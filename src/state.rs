@@ -135,6 +135,72 @@ pub fn refresh_devices() {
     force_refresh_devices();
 }
 
+/// Async refresh for spawned tasks: awaits host futures instead of block_on
+/// (block_on inside a spawned task deadlocks the single-threaded executor).
+pub async fn refresh_devices_async() {
+    let devices = device::get_connected_device_list().into_future().await;
+    let mapped = devices
+        .into_iter()
+        .map(|d| (d.addr, d.name))
+        .collect::<Vec<_>>();
+    {
+        let mut st = state().lock().unwrap_or_else(|p| p.into_inner());
+        st.devices = mapped;
+        st.last_device_refresh_ms = now_ms();
+    }
+    ensure_registered_async().await;
+}
+
+pub async fn ensure_registered_async() {
+    let addrs: Vec<String> = {
+        let st = state().lock().unwrap_or_else(|p| p.into_inner());
+        st.devices.iter().map(|(a, _)| a.clone()).collect()
+    };
+    if addrs.is_empty() {
+        let _ = register::register_interconnect_recv("", crate::QA_PKG)
+            .into_future()
+            .await;
+    }
+    for addr in addrs {
+        let _ = register::register_interconnect_recv(&addr, crate::QA_PKG)
+            .into_future()
+            .await;
+    }
+    let mut st = state().lock().unwrap_or_else(|p| p.into_inner());
+    st.registered = true;
+}
+
+pub async fn push_config_async(addr: &str) {
+    let (msg, addrs) = build_push(addr);
+    for a in addrs {
+        let _ = interconnect::send_qaic_message(&a, crate::QA_PKG, &msg)
+            .into_future()
+            .await;
+    }
+}
+
+fn build_push(addr: &str) -> (String, Vec<String>) {
+    let (cfg, addrs) = {
+        let st = state().lock().unwrap_or_else(|p| p.into_inner());
+        let addrs = if addr.is_empty() {
+            st.devices.iter().map(|(a, _)| a.clone()).collect()
+        } else {
+            vec![addr.to_string()]
+        };
+        (st.config.clone(), addrs)
+    };
+    let coords_json: Vec<serde_json::Value> = cfg
+        .coords
+        .iter()
+        .map(|c| match c {
+            Some(c) => serde_json::json!({"lat": c.lat, "lng": c.lng, "label": c.label}),
+            None => serde_json::Value::Null,
+        })
+        .collect();
+    let msg = serde_json::json!({"tag": "cfg", "coords": coords_json}).to_string();
+    (msg, addrs)
+}
+
 /// Unthrottled refresh — used on load and DeviceAction events.
 pub fn force_refresh_devices() {
     let devices = wit_bindgen::block_on(device::get_connected_device_list().into_future());
@@ -169,30 +235,9 @@ pub fn ensure_registered() {
     st.registered = true;
 }
 
-/// Push saved config to one device (or all if addr empty).
+/// Push saved config (sync path — only call from sync event context).
 pub fn push_config_to(addr: &str) {
-    let (cfg, addrs) = {
-        let st = state().lock().unwrap_or_else(|p| p.into_inner());
-        let addrs = if addr.is_empty() {
-            st.devices.iter().map(|(a, _)| a.clone()).collect()
-        } else {
-            vec![addr.to_string()]
-        };
-        (st.config.clone(), addrs)
-    };
-    let coords_json: Vec<serde_json::Value> = cfg
-        .coords
-        .iter()
-        .map(|c| match c {
-            Some(c) => serde_json::json!({"lat": c.lat, "lng": c.lng, "label": c.label}),
-            None => serde_json::Value::Null,
-        })
-        .collect();
-    let msg = serde_json::json!({
-        "tag": "cfg",
-        "coords": coords_json,
-    })
-    .to_string();
+    let (msg, addrs) = build_push(addr);
     for a in addrs {
         let r = wit_bindgen::block_on(
             interconnect::send_qaic_message(&a, crate::QA_PKG, &msg).into_future(),

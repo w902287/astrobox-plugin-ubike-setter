@@ -172,9 +172,10 @@ fn run_shortcut() {
     rerender();
 }
 
-/// Called on every UI render. If we just launched the GPS shortcut, try to
-/// pull the freshly uploaded location and apply it automatically.
-pub fn auto_pull_gps_if_awaiting() {
+/// Called from the render background task. If we just launched the GPS
+/// shortcut, pull the freshly uploaded location and apply it. Fully async —
+/// block_on here would deadlock the single-threaded executor.
+pub async fn auto_pull_gps_if_awaiting() {
     let (awaiting, key) = {
         let st = state::state().lock().unwrap_or_else(|p| p.into_inner());
         (st.awaiting_gps, st.config.loc_key.clone())
@@ -188,9 +189,38 @@ pub fn auto_pull_gps_if_awaiting() {
                 let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
                 st.awaiting_gps = false;
             }
-            apply_location(lat, lng, format!("手機 GPS（{age} 秒前）"));
+            set_location_state(lat, lng, format!("手機 GPS（{age} 秒前）"));
+            state::push_config_async("").await;
+            rerender();
         }
     }
+}
+
+/// Shared state mutation for a picked/located coordinate (no host calls).
+fn set_location_state(lat: f64, lng: f64, desc: String) {
+    let scenario = {
+        let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
+        let idx = st.selected_scenario;
+        st.config.coords[idx] = Some(Coord {
+            lat,
+            lng,
+            label: format!("目前位置 {:.4},{:.4}", lat, lng),
+        });
+        st.results.clear();
+        idx
+    };
+    state::save();
+    let preview = stations::nearby(lat, lng, 4).unwrap_or_default();
+    let preview_text = preview
+        .iter()
+        .map(|(n, _b, _d, dist)| format!("{}（{}m）", n, dist))
+        .collect::<Vec<_>>()
+        .join("；");
+    state::set_notice(format!(
+        "{}已設為{}並推送。附近：{}",
+        SCENARIO_NAMES[scenario], desc,
+        if preview_text.is_empty() { "讀取中".to_string() } else { preview_text }
+    ));
 }
 
 fn do_locate() {
@@ -220,30 +250,8 @@ fn do_locate() {
 }
 
 fn apply_location(lat: f64, lng: f64, desc: String) {
-    let scenario = {
-        let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
-        let idx = st.selected_scenario;
-        st.config.coords[idx] = Some(Coord {
-            lat,
-            lng,
-            label: format!("目前位置 {:.4},{:.4}", lat, lng),
-        });
-        st.results.clear();
-        idx
-    };
-    state::save();
+    set_location_state(lat, lng, desc);
     state::push_config_to("");
-    let preview = stations::nearby(lat, lng, 4).unwrap_or_default();
-    let preview_text = preview
-        .iter()
-        .map(|(n, _b, _d, dist)| format!("{}（{}m）", n, dist))
-        .collect::<Vec<_>>()
-        .join("；");
-    state::set_notice(format!(
-        "{}已設為{}並推送。附近：{}",
-        SCENARIO_NAMES[scenario], desc,
-        if preview_text.is_empty() { "讀取中".to_string() } else { preview_text }
-    ));
     rerender();
 }
 
