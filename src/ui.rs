@@ -142,20 +142,20 @@ fn do_locate() {
     };
     state::set_notice("讀取手機定位中…");
     rerender();
-    // 1) real phone GPS uploaded via Shortcut
-    if let Ok((lat, lng, age)) = stations::fetch_shortcut_location(&key) {
-        if age <= 600 {
-            apply_location(lat, lng, format!("手機 GPS（{age} 秒前）"));
-            return;
+    match stations::fetch_shortcut_location(&key) {
+        Ok((lat, lng, age)) => {
+            if age <= 600 {
+                apply_location(lat, lng, format!("手機 GPS（{age} 秒前）"));
+            } else {
+                state::set_notice(format!(
+                    "定位太舊（{} 分鐘前），請重新執行手機捷徑後再按一次",
+                    age / 60
+                ));
+                rerender();
+            }
         }
-    }
-    // 2) fallback: IP geolocation
-    state::set_notice("沒有近期手機定位，改用 IP 定位（公里級）…");
-    rerender();
-    match stations::locate_by_ip() {
-        Ok((lat, lng, desc)) => apply_location(lat, lng, desc),
         Err(err) => {
-            state::set_notice(format!("定位失敗：{err}，請改用搜尋"));
+            state::set_notice(format!("{err}。請先執行手機定位捷徑，再按「目前位置」"));
             rerender();
         }
     }
