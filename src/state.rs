@@ -26,8 +26,10 @@ pub struct Config {
 pub struct AppState {
     pub config: Config,
     pub devices: Vec<(String, String)>,
-    /// Search results: (name, lat, lng, area)
-    pub results: Vec<(String, f64, f64, String)>,
+    /// Place search results: (display_name, lat, lng)
+    pub results: Vec<(String, f64, f64)>,
+    /// One-line preview of nearby stations for the last picked place.
+    pub preview: String,
     pub selected_scenario: usize,
     pub query: String,
     pub notice: Option<String>,
@@ -43,6 +45,7 @@ pub fn state() -> &'static Mutex<AppState> {
             config: Config::default(),
             devices: Vec::new(),
             results: Vec::new(),
+            preview: String::new(),
             selected_scenario: 0,
             query: String::new(),
             notice: None,

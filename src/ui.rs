@@ -107,21 +107,21 @@ fn do_search() {
         st.query.clone()
     };
     if query.trim().is_empty() {
-        state::set_notice("請先輸入站名或路名關鍵字");
+        state::set_notice("請輸入地點，例如：市政府、台北車站、公司地址");
         rerender();
         return;
     }
-    state::set_notice("搜尋中…");
+    state::set_notice("搜尋地點中…");
     rerender();
-    match stations::search(&query, 12) {
+    match stations::geocode(&query, 6) {
         Ok(results) => {
             let count = results.len();
             let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
             st.results = results;
             st.notice = if count == 0 {
-                Some("找不到符合的站點".to_string())
+                Some("找不到這個地點，換個關鍵字試試".to_string())
             } else {
-                Some(format!("找到 {count} 個站點，點選以設定"))
+                Some(format!("找到 {count} 個地點，點選即設定並推送"))
             };
         }
         Err(err) => {
@@ -136,7 +136,7 @@ fn pick_station(i: usize) {
         let st = state::state().lock().unwrap_or_else(|p| p.into_inner());
         st.results.get(i).cloned()
     };
-    let Some((name, lat, lng, _area)) = picked else {
+    let Some((name, lat, lng)) = picked else {
         return;
     };
     let scenario = {
@@ -147,13 +147,26 @@ fn pick_station(i: usize) {
             lng,
             label: name.clone(),
         });
+        st.results.clear();
         idx
     };
     state::save();
     state::push_config_to("");
+    // preview nearest stations around the picked place
+    let preview = stations::nearby(lat, lng, 4).unwrap_or_default();
+    let preview_text = preview
+        .iter()
+        .map(|(n, b, d, dist)| format!("{}（可借{} 可還{}・{}m）", n, b, d, dist))
+        .collect::<Vec<_>>()
+        .join("；");
+    {
+        let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
+        st.preview = preview_text.clone();
+    }
     state::set_notice(format!(
-        "{}已設為「{}」並推送到手環",
-        SCENARIO_NAMES[scenario], name
+        "{}已設為「{}」，已推送。附近站點：{}",
+        SCENARIO_NAMES[scenario], name,
+        if preview_text.is_empty() { "（讀取中）".to_string() } else { preview_text }
     ));
     rerender();
 }
@@ -229,11 +242,11 @@ fn build_ui() -> ui::Element {
 
     // Search row
     let input = ui::Element::new(ui::ElementType::Input, Some(st.query.as_str()))
-        .prop("placeholder", "輸入站名／路名，例如 市政府")
+        .prop("placeholder", "輸入地點，例如 市政府、台北車站")
         .width_full()
         .on(ui::Event::Input, EV_QUERY)
         .on(ui::Event::Change, EV_QUERY);
-    let search_btn = ui::Element::new(ui::ElementType::Button, Some("搜尋站點"))
+    let search_btn = ui::Element::new(ui::ElementType::Button, Some("搜尋地點"))
         .bg(C_GREEN)
         .text_color(C_DARK_TEXT)
         .radius(10)
@@ -260,12 +273,8 @@ fn build_ui() -> ui::Element {
         .flex_direction(ui::FlexDirection::Column)
         .gap(6)
         .margin_top(8);
-    for (i, (name, _lat, _lng, area)) in st.results.iter().enumerate() {
-        let label = if area.is_empty() {
-            name.clone()
-        } else {
-            format!("{}（{}）", name, area)
-        };
+    for (i, (name, _lat, _lng)) in st.results.iter().enumerate() {
+        let label = name.clone();
         let ev = format!("{}{}", EV_PICK_PREFIX, i);
         results_col = results_col.child(
             ui::Element::new(ui::ElementType::Button, Some(label.as_str()))

@@ -1,10 +1,78 @@
-//! YouBike station search via the official open-data endpoint (Taipei 2.0).
+//! Location search (geocoding) + nearby-station preview.
+//!
+//! The user searches a PLACE (e.g. "市政府"), picks it as the scenario's
+//! center coordinate; the band then always shows the nearest 4 stations around
+//! that point. Stations are never picked manually.
 
 use waki::Client;
 
-/// Fetch station list and filter by keyword. Returns up to `limit` matches:
-/// (name, lat, lng, area).
-pub fn search(keyword: &str, limit: usize) -> Result<Vec<(String, f64, f64, String)>, String> {
+/// Geocode a place name via Nominatim (same as the old web settings page).
+/// Returns up to `limit` matches: (display_name, lat, lng).
+pub fn geocode(keyword: &str, limit: usize) -> Result<Vec<(String, f64, f64)>, String> {
+    let url = format!(
+        "https://nominatim.openstreetmap.org/search?format=json&limit={}&accept-language=zh-TW&countrycodes=tw&q={}",
+        limit,
+        urlencode(keyword)
+    );
+    let resp = Client::new()
+        .get(&url)
+        .header("User-Agent", "ubike-setter-plugin/0.1 (astrobox)")
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .send()
+        .map_err(|e| format!("request failed: {e}"))?;
+    if resp.status_code() != 200 {
+        return Err(format!("HTTP {}", resp.status_code()));
+    }
+    let body = resp.body().map_err(|e| format!("read failed: {e}"))?;
+    let list: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|e| format!("json failed: {e}"))?;
+    let arr = list.as_array().ok_or("unexpected shape")?;
+    let mut out = Vec::new();
+    for item in arr {
+        let name = item
+            .get("display_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let lat = item.get("lat").and_then(value_to_f64).unwrap_or_default();
+        let lng = item.get("lon").and_then(value_to_f64).unwrap_or_default();
+        if lat == 0.0 || lng == 0.0 {
+            continue;
+        }
+        let short = shorten_display_name(&name);
+        out.push((short, lat, lng));
+        if out.len() >= limit {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// Nominatim display_name is very long ("台北市政府, 市府路, 信義區, ...").
+/// Keep the first 3 comma parts for readability.
+fn shorten_display_name(name: &str) -> String {
+    let parts: Vec<&str> = name.split(',').map(str::trim).take(3).collect();
+    parts.join("・")
+}
+
+fn urlencode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char)
+            }
+            b' ' => out.push_str("%20"),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+/// Fetch nearest `count` stations around a coordinate:
+/// (name, bikes, docks, dist_m). Used for both the plugin preview list and
+/// the band reply.
+pub fn nearby(lat: f64, lng: f64, count: usize) -> Result<Vec<(String, i64, i64, i64)>, String> {
     let url = "https://tcgbusfs.blob.core.windows.net/dotapp/youbike/v2/youbike_immediate.json";
     let resp = Client::new()
         .get(url)
@@ -19,37 +87,36 @@ pub fn search(keyword: &str, limit: usize) -> Result<Vec<(String, f64, f64, Stri
         serde_json::from_slice(&body).map_err(|e| format!("json failed: {e}"))?;
     let arr = list.as_array().ok_or("unexpected shape")?;
 
-    let kw = keyword.trim().to_lowercase();
-    let mut out = Vec::new();
+    let mut rows: Vec<(f64, String, i64, i64)> = Vec::new();
     for s in arr {
-        let name_raw = s.get("sna").and_then(|v| v.as_str()).unwrap_or("");
-        let name = name_raw
-            .replace("YouBike2.0_", "")
-            .replace("YouBike1.0_", "");
-        let area = s.get("sarea").and_then(|v| v.as_str()).unwrap_or("");
-        if !kw.is_empty() {
-            let hay = format!("{} {}", name.to_lowercase(), area.to_lowercase());
-            if !hay.contains(&kw) {
-                continue;
-            }
-        }
-        let lat = s
-            .get("latitude")
-            .and_then(value_to_f64)
-            .unwrap_or_default();
-        let lng = s
-            .get("longitude")
-            .and_then(value_to_f64)
-            .unwrap_or_default();
-        if lat == 0.0 || lng == 0.0 {
+        let slat = s.get("latitude").and_then(value_to_f64).unwrap_or_default();
+        let slng = s.get("longitude").and_then(value_to_f64).unwrap_or_default();
+        if slat == 0.0 || slng == 0.0 {
             continue;
         }
-        out.push((name, lat, lng, area.to_string()));
-        if out.len() >= limit {
-            break;
-        }
+        let name = s
+            .get("sna")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .replace("YouBike2.0_", "")
+            .replace("YouBike1.0_", "");
+        let bikes = s
+            .get("available_rent_bikes")
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|x| x.parse().ok())))
+            .unwrap_or(0);
+        let docks = s
+            .get("available_return_bikes")
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|x| x.parse().ok())))
+            .unwrap_or(0);
+        let d = haversine_km(lat, lng, slat, slng);
+        rows.push((d, name, bikes, docks));
     }
-    Ok(out)
+    rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(rows
+        .into_iter()
+        .take(count)
+        .map(|(d, name, bikes, docks)| (name, bikes, docks, (d * 1000.0).round() as i64))
+        .collect())
 }
 
 fn value_to_f64(v: &serde_json::Value) -> Option<f64> {
@@ -60,8 +127,7 @@ fn value_to_f64(v: &serde_json::Value) -> Option<f64> {
 }
 
 /// Band asked for live stations for a scenario: compute nearest 4 from the
-/// saved coord and reply over interconnect with the same shape the Worker
-/// used, so the quick app can render it unchanged.
+/// saved coord and reply over interconnect.
 pub fn reply_stations(addr: &str, scenario: usize) {
     fn send_json(addr: &str, value: serde_json::Value) {
         use crate::astrobox::psys_host::interconnect;
@@ -84,77 +150,36 @@ pub fn reply_stations(addr: &str, scenario: usize) {
         return;
     };
 
-    let url = "https://tcgbusfs.blob.core.windows.net/dotapp/youbike/v2/youbike_immediate.json";
-    let resp = Client::new()
-        .get(url)
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .send();
-    let body = match resp {
-        Ok(r) if r.status_code() == 200 => r.body().unwrap_or_default(),
-        Ok(r) => {
-            send_json(addr, serde_json::json!({"tag":"stations","scenario":scenario,"error":format!("HTTP {}", r.status_code())}));
-            return;
+    match nearby(coord.lat, coord.lng, 4) {
+        Ok(rows) => {
+            let stations: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|(name, bikes, docks, dist)| {
+                    serde_json::json!({"name": name, "bikes": bikes, "docks": docks, "dist": dist})
+                })
+                .collect();
+            let label = {
+                let st = crate::state::state().lock().unwrap_or_else(|p| p.into_inner());
+                st.config.coords[scenario]
+                    .as_ref()
+                    .map(|c| c.label.clone())
+                    .filter(|l| !l.is_empty())
+                    .unwrap_or_else(|| crate::state::SCENARIO_NAMES[scenario].to_string())
+            };
+            send_json(
+                addr,
+                serde_json::json!({
+                    "tag": "stations",
+                    "scenario": scenario,
+                    "stations": stations,
+                    "source": label,
+                }),
+            );
         }
-        Err(e) => {
-            send_json(addr, serde_json::json!({"tag":"stations","scenario":scenario,"error":format!("{e}")}));
-            return;
+        Err(err) => {
+            send_json(addr, serde_json::json!({"tag":"stations","scenario":scenario,"error":err}));
         }
-    };
-    let Ok(list) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        send_json(addr, serde_json::json!({"tag":"stations","scenario":scenario,"error":"bad-json"}));
-        return;
-    };
-    let Some(arr) = list.as_array() else {
-        send_json(addr, serde_json::json!({"tag":"stations","scenario":scenario,"error":"bad-shape"}));
-        return;
-    };
-
-    let mut rows: Vec<(f64, String, i64, i64)> = Vec::new();
-    for s in arr {
-        let lat = s.get("latitude").and_then(value_to_f64).unwrap_or_default();
-        let lng = s.get("longitude").and_then(value_to_f64).unwrap_or_default();
-        if lat == 0.0 || lng == 0.0 {
-            continue;
-        }
-        let name = s
-            .get("sna")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .replace("YouBike2.0_", "")
-            .replace("YouBike1.0_", "");
-        let bikes = s
-            .get("available_rent_bikes")
-            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|x| x.parse().ok())))
-            .unwrap_or(0);
-        let docks = s
-            .get("available_return_bikes")
-            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|x| x.parse().ok())))
-            .unwrap_or(0);
-        let d = haversine_km(coord.lat, coord.lng, lat, lng);
-        rows.push((d, name, bikes, docks));
     }
-    rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    let stations: Vec<serde_json::Value> = rows
-        .iter()
-        .take(4)
-        .map(|(d, name, bikes, docks)| {
-            serde_json::json!({
-                "name": name,
-                "bikes": bikes,
-                "docks": docks,
-                "dist": (d * 1000.0).round() as i64,
-            })
-        })
-        .collect();
-    send_json(
-        addr,
-        serde_json::json!({
-            "tag": "stations",
-            "scenario": scenario,
-            "stations": stations,
-            "source": crate::state::SCENARIO_NAMES[scenario],
-        }),
-    );
 }
 
 fn haversine_km(a_lat: f64, a_lng: f64, b_lat: f64, b_lng: f64) -> f64 {
