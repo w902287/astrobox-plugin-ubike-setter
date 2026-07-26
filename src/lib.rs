@@ -18,7 +18,7 @@ struct UbikeSetter;
 
 fn immediate_string(value: String) -> FutureReader<String> {
     let (writer, reader) = wit_future::new::<String>(|| String::new());
-    spawn(async move {
+    wit_bindgen::spawn(async move {
         let _ = writer.write(value).await;
     });
     reader
@@ -26,7 +26,7 @@ fn immediate_string(value: String) -> FutureReader<String> {
 
 fn immediate_unit() -> FutureReader<()> {
     let (writer, reader) = wit_future::new::<()>(|| ());
-    spawn(async move {
+    wit_bindgen::spawn(async move {
         let _ = writer.write(()).await;
     });
     reader
