@@ -39,7 +39,7 @@ impl event::Guest for UbikeSetter {
                 handle_interconnect(&event_payload);
             }
             EventType::DeviceAction => {
-                state::refresh_devices();
+                state::force_refresh_devices();
                 ui::rerender();
             }
             _ => {}
@@ -57,10 +57,17 @@ impl event::Guest for UbikeSetter {
     }
 
     fn on_ui_render(element_id: String) -> FutureReader<()> {
-        state::refresh_devices();
-        ui::auto_pull_gps_if_awaiting();
+        // Paint immediately — the host shows "waiting for plugin render"
+        // until the first render() call, so nothing slow may run before it.
         ui::render_root(&element_id);
-        immediate_unit()
+        let (writer, reader) = wit_future::new::<()>(|| ());
+        wit_bindgen::spawn(async move {
+            state::refresh_devices();
+            ui::auto_pull_gps_if_awaiting();
+            ui::rerender();
+            let _ = writer.write(()).await;
+        });
+        reader
     }
 
     fn on_card_render(_card_id: String) -> FutureReader<()> {
@@ -92,6 +99,20 @@ fn handle_interconnect(payload: &str) {
     };
     let tag = inner.get("tag").and_then(|v| v.as_str()).unwrap_or("");
     match tag {
+        "__hs__" => {
+            let count = inner.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+            if count < 2 {
+                let reply = serde_json::json!({"tag": "__hs__", "count": count + 1}).to_string();
+                let _ = wit_bindgen::block_on(
+                    crate::astrobox::psys_host::interconnect::send_qaic_message(
+                        &addr,
+                        QA_PKG,
+                        &reply,
+                    )
+                    .into_future(),
+                );
+            }
+        }
         "cfg-pull" => {
             tracing::info!("quick app requested config");
             state::push_config_to(&addr);
@@ -119,6 +140,10 @@ impl lifecycle::Guest for UbikeSetter {
             .without_time()
             .try_init();
         state::load();
+        wit_bindgen::spawn(async move {
+            state::force_refresh_devices();
+            tracing::info!("Ubike Setter: devices registered");
+        });
         tracing::info!("Ubike Setter plugin loaded");
     }
 }

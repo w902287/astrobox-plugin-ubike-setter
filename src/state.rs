@@ -34,6 +34,8 @@ pub struct AppState {
     pub config: Config,
     /// Host platform string from os.platform(): "android" / "ios" / ...
     pub platform: String,
+    /// Last device-list refresh (ms since epoch) — throttle host calls.
+    pub last_device_refresh_ms: u128,
     pub devices: Vec<(String, String)>,
     /// Place search results: (display_name, lat, lng)
     pub results: Vec<(String, f64, f64)>,
@@ -55,6 +57,7 @@ pub fn state() -> &'static Mutex<AppState> {
         Mutex::new(AppState {
             config: Config::default(),
             platform: String::new(),
+            last_device_refresh_ms: 0,
             devices: Vec::new(),
             results: Vec::new(),
             preview: String::new(),
@@ -114,7 +117,26 @@ pub fn save() {
     }
 }
 
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+/// Throttled refresh (min 1.5s apart) — safe to call on every UI render.
 pub fn refresh_devices() {
+    {
+        let st = state().lock().unwrap_or_else(|p| p.into_inner());
+        if now_ms().saturating_sub(st.last_device_refresh_ms) < 1500 {
+            return;
+        }
+    }
+    force_refresh_devices();
+}
+
+/// Unthrottled refresh — used on load and DeviceAction events.
+pub fn force_refresh_devices() {
     let devices = wit_bindgen::block_on(device::get_connected_device_list().into_future());
     let mapped = devices
         .into_iter()
@@ -122,6 +144,7 @@ pub fn refresh_devices() {
         .collect::<Vec<_>>();
     let mut st = state().lock().unwrap_or_else(|p| p.into_inner());
     st.devices = mapped;
+    st.last_device_refresh_ms = now_ms();
     drop(st);
     ensure_registered();
 }
@@ -132,6 +155,11 @@ pub fn ensure_registered() {
         let st = state().lock().unwrap_or_else(|p| p.into_inner());
         st.devices.iter().map(|(a, _)| a.clone()).collect()
     };
+    if addrs.is_empty() {
+        let _ = wit_bindgen::block_on(
+            register::register_interconnect_recv("", crate::QA_PKG).into_future(),
+        );
+    }
     for addr in addrs {
         let _ = wit_bindgen::block_on(
             register::register_interconnect_recv(&addr, crate::QA_PKG).into_future(),

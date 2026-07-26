@@ -4,7 +4,74 @@
 //! center coordinate; the band then always shows the nearest 4 stations around
 //! that point. Stations are never picked manually.
 
+use std::sync::{Mutex, OnceLock};
 use waki::Client;
+
+struct BikeCache {
+    at_ms: u128,
+    rows: Vec<(f64, f64, String, i64, i64)>, // lat,lng,name,bikes,docks
+}
+
+static BIKE_CACHE: OnceLock<Mutex<Option<BikeCache>>> = OnceLock::new();
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+/// Download + parse the station list, cached for 30 seconds.
+fn all_stations() -> Result<Vec<(f64, f64, String, i64, i64)>, String> {
+    let cache = BIKE_CACHE.get_or_init(|| Mutex::new(None));
+    {
+        let guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(c) = guard.as_ref() {
+            if now_ms().saturating_sub(c.at_ms) < 30_000 {
+                return Ok(c.rows.clone());
+            }
+        }
+    }
+    let url = "https://tcgbusfs.blob.core.windows.net/dotapp/youbike/v2/youbike_immediate.json";
+    let resp = Client::new()
+        .get(url)
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .send()
+        .map_err(|e| format!("request failed: {e}"))?;
+    if resp.status_code() != 200 {
+        return Err(format!("HTTP {}", resp.status_code()));
+    }
+    let body = resp.body().map_err(|e| format!("read failed: {e}"))?;
+    let list: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|e| format!("json failed: {e}"))?;
+    let arr = list.as_array().ok_or("unexpected shape")?;
+    let mut rows = Vec::with_capacity(arr.len());
+    for s in arr {
+        let lat = s.get("latitude").and_then(value_to_f64).unwrap_or_default();
+        let lng = s.get("longitude").and_then(value_to_f64).unwrap_or_default();
+        if lat == 0.0 || lng == 0.0 {
+            continue;
+        }
+        let name = s
+            .get("sna")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .replace("YouBike2.0_", "")
+            .replace("YouBike1.0_", "");
+        let bikes = s
+            .get("available_rent_bikes")
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|x| x.parse().ok())))
+            .unwrap_or(0);
+        let docks = s
+            .get("available_return_bikes")
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|x| x.parse().ok())))
+            .unwrap_or(0);
+        rows.push((lat, lng, name, bikes, docks));
+    }
+    let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+    *guard = Some(BikeCache { at_ms: now_ms(), rows: rows.clone() });
+    Ok(rows)
+}
 
 /// Geocode a place name via Nominatim (same as the old web settings page).
 /// Returns up to `limit` matches: (display_name, lat, lng).
@@ -151,53 +218,21 @@ pub fn fetch_shortcut_location(key: &str) -> Result<(f64, f64, i64), String> {
     Ok((lat, lng, age))
 }
 
-/// Fetch nearest `count` stations around a coordinate:
-/// (name, bikes, docks, dist_m). Used for both the plugin preview list and
-/// the band reply.
+/// Nearest `count` stations around a coordinate: (name, bikes, docks, dist_m).
+/// Backed by the 30-second station cache.
 pub fn nearby(lat: f64, lng: f64, count: usize) -> Result<Vec<(String, i64, i64, i64)>, String> {
-    let url = "https://tcgbusfs.blob.core.windows.net/dotapp/youbike/v2/youbike_immediate.json";
-    let resp = Client::new()
-        .get(url)
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .send()
-        .map_err(|e| format!("request failed: {e}"))?;
-    if resp.status_code() != 200 {
-        return Err(format!("HTTP {}", resp.status_code()));
-    }
-    let body = resp.body().map_err(|e| format!("read failed: {e}"))?;
-    let list: serde_json::Value =
-        serde_json::from_slice(&body).map_err(|e| format!("json failed: {e}"))?;
-    let arr = list.as_array().ok_or("unexpected shape")?;
-
-    let mut rows: Vec<(f64, String, i64, i64)> = Vec::new();
-    for s in arr {
-        let slat = s.get("latitude").and_then(value_to_f64).unwrap_or_default();
-        let slng = s.get("longitude").and_then(value_to_f64).unwrap_or_default();
-        if slat == 0.0 || slng == 0.0 {
-            continue;
-        }
-        let name = s
-            .get("sna")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .replace("YouBike2.0_", "")
-            .replace("YouBike1.0_", "");
-        let bikes = s
-            .get("available_rent_bikes")
-            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|x| x.parse().ok())))
-            .unwrap_or(0);
-        let docks = s
-            .get("available_return_bikes")
-            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|x| x.parse().ok())))
-            .unwrap_or(0);
-        let d = haversine_km(lat, lng, slat, slng);
-        rows.push((d, name, bikes, docks));
-    }
-    rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(rows
+    let rows = all_stations()?;
+    let mut scored: Vec<(f64, String, i64, i64)> = rows
+        .into_iter()
+        .map(|(slat, slng, name, bikes, docks)| {
+            (haversine_km(lat, lng, slat, slng), name, bikes, docks)
+        })
+        .collect();
+    scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(scored
         .into_iter()
         .take(count)
-        .map(|(d, name, bikes, docks)| (name, bikes, docks, (d * 1000.0).round() as i64))
+        .map(|(d, n, b, k)| (n, b, k, (d * 1000.0).round() as i64))
         .collect())
 }
 
