@@ -36,6 +36,8 @@ pub struct AppState {
     pub selected_scenario: usize,
     pub query: String,
     pub notice: Option<String>,
+    /// Set after launching the GPS shortcut; on next UI render we auto-pull.
+    pub awaiting_gps: bool,
     pub root_element: Option<String>,
     pub registered: bool,
 }
@@ -52,6 +54,7 @@ pub fn state() -> &'static Mutex<AppState> {
             selected_scenario: 0,
             query: String::new(),
             notice: None,
+            awaiting_gps: false,
             root_element: None,
             registered: false,
         })

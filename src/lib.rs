@@ -58,6 +58,7 @@ impl event::Guest for UbikeSetter {
 
     fn on_ui_render(element_id: String) -> FutureReader<()> {
         state::refresh_devices();
+        ui::auto_pull_gps_if_awaiting();
         ui::render_root(&element_id);
         immediate_unit()
     }

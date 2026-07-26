@@ -12,6 +12,7 @@ const EV_SEARCH: &str = "do_search";
 const EV_PUSH: &str = "push_now";
 const EV_CLEAR: &str = "clear_current";
 const EV_LOCATE: &str = "locate_me";
+const EV_RUN_SHORTCUT: &str = "run_shortcut";
 const EV_PICK_PREFIX: &str = "pick_";
 
 const C_BG: &str = "#101914";
@@ -47,6 +48,7 @@ pub fn handle_ui_event(event_id: &str, ev: ui::Event, payload: &str) {
             EV_TAB2 => set_tab(2),
             EV_SEARCH => do_search(),
             EV_LOCATE => do_locate(),
+            EV_RUN_SHORTCUT => run_shortcut(),
             EV_PUSH => {
                 state::push_config_to("");
                 state::set_notice("已推送設定到手環");
@@ -133,6 +135,38 @@ fn do_search() {
         }
     }
     rerender();
+}
+
+fn run_shortcut() {
+    use crate::astrobox::psys_host::dialog;
+    {
+        let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
+        st.awaiting_gps = true;
+    }
+    dialog::open_url("shortcuts://run-shortcut?name=UbikeGPS");
+    state::set_notice("已喚起「UbikeGPS」捷徑取得定位；回到本頁會自動套用");
+    rerender();
+}
+
+/// Called on every UI render. If we just launched the GPS shortcut, try to
+/// pull the freshly uploaded location and apply it automatically.
+pub fn auto_pull_gps_if_awaiting() {
+    let (awaiting, key) = {
+        let st = state::state().lock().unwrap_or_else(|p| p.into_inner());
+        (st.awaiting_gps, st.config.loc_key.clone())
+    };
+    if !awaiting {
+        return;
+    }
+    if let Ok((lat, lng, age)) = stations::fetch_shortcut_location(&key) {
+        if age <= 120 {
+            {
+                let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
+                st.awaiting_gps = false;
+            }
+            apply_location(lat, lng, format!("手機 GPS（{age} 秒前）"));
+        }
+    }
 }
 
 fn do_locate() {
@@ -309,6 +343,11 @@ fn build_ui() -> ui::Element {
         .text_color(C_DARK_TEXT)
         .radius(10)
         .on(ui::Event::Click, EV_SEARCH);
+    let shortcut_btn = ui::Element::new(ui::ElementType::Button, Some("手機定位"))
+        .bg(C_CARD)
+        .text_color(C_GREEN)
+        .radius(10)
+        .on(ui::Event::Click, EV_RUN_SHORTCUT);
     let locate_btn = ui::Element::new(ui::ElementType::Button, Some("目前位置"))
         .bg(C_CARD)
         .text_color(C_TEXT)
@@ -321,6 +360,7 @@ fn build_ui() -> ui::Element {
         .margin_top(10)
         .child(input)
         .child(search_btn)
+        .child(shortcut_btn)
         .child(locate_btn);
 
     // Notice
@@ -373,7 +413,7 @@ fn build_ui() -> ui::Element {
     let shortcut_hint = {
         let key = st.config.loc_key.clone();
         let text = format!(
-            "手機GPS捷徑：用 iOS 捷徑「取得目前位置」後，以 POST 送到 https://youbike-band.w902287.workers.dev/api/loc（JSON：key={key}、lat、lng），再按「目前位置」即用真 GPS。"
+            "手機GPS：建立名為 UbikeGPS 的捷徑（取得目前位置 → POST 到 /api/loc，key={key}）。按「手機定位」會自動執行捷徑，回來按「目前位置」套用。"
         );
         ui::Element::new(ui::ElementType::P, Some(text.as_str()))
             .size(11)
