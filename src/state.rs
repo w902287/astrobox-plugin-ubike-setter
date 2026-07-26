@@ -138,7 +138,10 @@ pub fn refresh_devices() {
 /// Async refresh for spawned tasks: awaits host futures instead of block_on
 /// (block_on inside a spawned task deadlocks the single-threaded executor).
 pub async fn refresh_devices_async() {
-    let devices = device::get_connected_device_list().into_future().await;
+    let mut devices = device::get_connected_device_list().into_future().await;
+    if devices.is_empty() {
+        devices = device::get_device_list().into_future().await;
+    }
     let mapped = devices
         .into_iter()
         .map(|d| (d.addr, d.name))
@@ -203,7 +206,10 @@ fn build_push(addr: &str) -> (String, Vec<String>) {
 
 /// Unthrottled refresh — used on load and DeviceAction events.
 pub fn force_refresh_devices() {
-    let devices = wit_bindgen::block_on(device::get_connected_device_list().into_future());
+    let mut devices = wit_bindgen::block_on(device::get_connected_device_list().into_future());
+    if devices.is_empty() {
+        devices = wit_bindgen::block_on(device::get_device_list().into_future());
+    }
     let mapped = devices
         .into_iter()
         .map(|d| (d.addr, d.name))

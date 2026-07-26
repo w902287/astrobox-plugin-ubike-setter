@@ -14,6 +14,7 @@ const EV_CLEAR: &str = "clear_current";
 const EV_LOCATE: &str = "locate_me";
 const EV_RUN_SHORTCUT: &str = "run_shortcut";
 const EV_TRIGGER_INPUT: &str = "trigger_input";
+const EV_REFRESH_DEV: &str = "refresh_dev";
 const EV_PICK_PREFIX: &str = "pick_";
 
 const C_BG: &str = "#101914";
@@ -50,6 +51,19 @@ pub fn handle_ui_event(event_id: &str, ev: ui::Event, payload: &str) {
             EV_SEARCH => do_search(),
             EV_LOCATE => do_locate(),
             EV_RUN_SHORTCUT => run_shortcut(),
+            EV_REFRESH_DEV => {
+                state::force_refresh_devices();
+                let n = {
+                    let st = state::state().lock().unwrap_or_else(|p| p.into_inner());
+                    st.devices.len()
+                };
+                state::set_notice(if n > 0 {
+                    format!("已重新整理：偵測到 {n} 台手環並重新註冊監聽")
+                } else {
+                    "仍未偵測到手環：請確認 AstroBox 首頁已連線裝置".to_string()
+                });
+                rerender();
+            }
             EV_PUSH => {
                 state::push_config_to("");
                 state::set_notice("已推送設定到手環");
@@ -298,9 +312,16 @@ fn pick_station(i: usize) {
 fn build_ui() -> ui::Element {
     let st = state::state().lock().unwrap_or_else(|p| p.into_inner());
 
-    let title = ui::Element::new(ui::ElementType::P, Some("Ubike助手 設定"))
+    let title_text = concat!("Ubike助手 設定 v", env!("CARGO_PKG_VERSION"));
+    let title = ui::Element::new(ui::ElementType::P, Some(title_text))
         .size(22)
         .text_color(C_GREEN);
+    let bridge_line = ui::Element::new(
+        ui::ElementType::P,
+        Some("內建 FetchBridge 代理：已啟用（監聽 tw.youbike.band）"),
+    )
+    .size(12)
+    .text_color(C_MUTED);
 
     let device_line = if st.devices.is_empty() {
         "未偵測到已連線手環".to_string()
@@ -316,7 +337,19 @@ fn build_ui() -> ui::Element {
     };
     let device_el = ui::Element::new(ui::ElementType::P, Some(device_line.as_str()))
         .size(13)
-        .text_color(C_MUTED);
+        .text_color(if st.devices.is_empty() { "#ff9f7b" } else { C_GREEN });
+    let refresh_dev_btn = ui::Element::new(ui::ElementType::Button, Some("重新整理"))
+        .bg(C_CARD)
+        .text_color(C_TEXT)
+        .radius(10)
+        .on(ui::Event::Click, EV_REFRESH_DEV);
+    let device_row = ui::Element::new(ui::ElementType::Div, None)
+        .flex()
+        .flex_direction(ui::FlexDirection::Row)
+        .gap(8)
+        .align_center()
+        .child(device_el)
+        .child(refresh_dev_btn);
 
     // Scenario tabs
     let mut tabs = ui::Element::new(ui::ElementType::Div, None)
@@ -475,7 +508,8 @@ fn build_ui() -> ui::Element {
         .padding(14)
         .radius(12)
         .child(title)
-        .child(device_el)
+        .child(bridge_line)
+        .child(device_row)
         .child(tabs)
         .child(saved_col)
         .child(search_row);
