@@ -2,6 +2,7 @@ use wit_bindgen::FutureReader;
 
 use crate::exports::astrobox::psys_plugin::{event_v3 as event, event_v3::EventType, lifecycle};
 
+pub mod fetchbridge;
 pub mod state;
 pub mod stations;
 pub mod ui;
@@ -112,6 +113,9 @@ fn handle_interconnect(payload: &str) {
                     .into_future(),
                 );
             }
+        }
+        "fetch" => {
+            fetchbridge::handle_fetch(&addr, inner.clone());
         }
         "cfg-pull" => {
             tracing::info!("quick app requested config");
