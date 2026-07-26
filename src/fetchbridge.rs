@@ -68,8 +68,8 @@ pub fn handle_fetch(addr: &str, req: Value) {
     let mut builder = Client::new()
         .request(m, &url)
         .connect_timeout(std::time::Duration::from_secs(15));
-    for (k, v) in &headers {
-        builder = builder.header(k.as_str(), v.as_str());
+    if !headers.is_empty() {
+        builder = builder.headers(headers.clone());
     }
     if let Some(b) = body {
         builder = builder.body(b.into_bytes());
