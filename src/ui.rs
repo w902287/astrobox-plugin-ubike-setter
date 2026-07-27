@@ -7,6 +7,7 @@ use crate::stations;
 const EV_TAB0: &str = "tab0";
 const EV_TAB1: &str = "tab1";
 const EV_TAB2: &str = "tab2";
+const EV_TAB3: &str = "tab3";
 const EV_QUERY: &str = "query_input";
 const EV_SEARCH: &str = "do_search";
 const EV_PUSH: &str = "push_now";
@@ -48,6 +49,7 @@ pub fn handle_ui_event(event_id: &str, ev: ui::Event, payload: &str) {
             EV_TAB0 => set_tab(0),
             EV_TAB1 => set_tab(1),
             EV_TAB2 => set_tab(2),
+            EV_TAB3 => set_tab(3),
             EV_SEARCH => do_search(),
             EV_LOCATE => do_locate(),
             EV_RUN_SHORTCUT => run_shortcut(),
@@ -73,6 +75,9 @@ pub fn handle_ui_event(event_id: &str, ev: ui::Event, payload: &str) {
                 {
                     let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
                     let idx = st.selected_scenario;
+                    if idx >= 3 {
+                        return;
+                    }
                     st.config.coords[idx] = None;
                 }
                 state::save();
@@ -210,20 +215,15 @@ pub async fn auto_pull_gps_if_awaiting() {
     }
 }
 
-/// Shared state mutation for a picked/located coordinate (no host calls).
+/// Locate result feeds the NEARBY page only — it never overwrites the three
+/// fixed scenario coordinates. The band's 附近 page reads the same /api/loc
+/// upload directly, so here we just confirm and preview.
 fn set_location_state(lat: f64, lng: f64, desc: String) {
-    let scenario = {
+    {
         let mut st = state::state().lock().unwrap_or_else(|p| p.into_inner());
-        let idx = st.selected_scenario;
-        st.config.coords[idx] = Some(Coord {
-            lat,
-            lng,
-            label: format!("目前位置 {:.4},{:.4}", lat, lng),
-        });
         st.results.clear();
-        idx
-    };
-    state::save();
+        st.last_fix = Some((lat, lng));
+    }
     let preview = stations::nearby(lat, lng, 4).unwrap_or_default();
     let preview_text = preview
         .iter()
@@ -231,8 +231,7 @@ fn set_location_state(lat: f64, lng: f64, desc: String) {
         .collect::<Vec<_>>()
         .join("；");
     state::set_notice(format!(
-        "{}已設為{}並推送。附近：{}",
-        SCENARIO_NAMES[scenario], desc,
+        "定位完成：{desc}。手環「附近」頁將顯示：{}",
         if preview_text.is_empty() { "讀取中".to_string() } else { preview_text }
     ));
 }
@@ -265,11 +264,16 @@ fn do_locate() {
 
 fn apply_location(lat: f64, lng: f64, desc: String) {
     set_location_state(lat, lng, desc);
-    state::push_config_to("");
     rerender();
 }
 
 fn pick_station(i: usize) {
+    {
+        let st = state::state().lock().unwrap_or_else(|p| p.into_inner());
+        if st.selected_scenario >= 3 {
+            return;
+        }
+    }
     let picked = {
         let st = state::state().lock().unwrap_or_else(|p| p.into_inner());
         st.results.get(i).cloned()
@@ -357,8 +361,9 @@ fn build_ui() -> ui::Element {
         .flex_direction(ui::FlexDirection::Row)
         .gap(8)
         .margin_top(10);
-    for (i, name) in SCENARIO_NAMES.iter().enumerate() {
-        let ev = [EV_TAB0, EV_TAB1, EV_TAB2][i];
+    let tab_names = ["住家", "公司", "車站", "附近"];
+    for (i, name) in tab_names.iter().enumerate() {
+        let ev = [EV_TAB0, EV_TAB1, EV_TAB2, EV_TAB3][i];
         let active = st.selected_scenario == i;
         let mut b = ui::Element::new(ui::ElementType::Button, Some(name))
             .radius(16)
@@ -379,7 +384,7 @@ fn build_ui() -> ui::Element {
         .flex_direction(ui::FlexDirection::Column)
         .gap(4)
         .margin_top(8);
-    for (i, name) in SCENARIO_NAMES.iter().enumerate() {
+    for (i, name) in SCENARIO_NAMES.iter().take(3).enumerate() {
         let text = match &st.config.coords[i] {
             Some(c) if !c.label.is_empty() => format!("{}：{}", name, c.label),
             Some(c) => format!("{}：{:.4}, {:.4}", name, c.lat, c.lng),
@@ -397,7 +402,9 @@ fn build_ui() -> ui::Element {
         );
     }
 
-    // Search row
+    let is_nearby_tab = st.selected_scenario == 3;
+
+    // Search row (fixed-scenario pages only)
     let input = ui::Element::new(ui::ElementType::Input, Some(st.query.as_str()))
         .prop("placeholder", "地點或地址：市政府／信義區市府路45號")
         .width_full()
@@ -418,15 +425,47 @@ fn build_ui() -> ui::Element {
         .text_color(C_TEXT)
         .radius(10)
         .on(ui::Event::Click, EV_LOCATE);
-    let search_row = ui::Element::new(ui::ElementType::Div, None)
-        .flex()
-        .flex_direction(ui::FlexDirection::Row)
-        .gap(8)
-        .margin_top(10)
-        .child(input)
-        .child(search_btn)
-        .child(shortcut_btn)
-        .child(locate_btn);
+    let search_row = if is_nearby_tab {
+        let fix_line = {
+            let text = match st.last_fix {
+                Some((lat, lng)) => format!("最近定位：{:.4}, {:.4}", lat, lng),
+                None => "尚未定位：按「手機定位」取得目前位置".to_string(),
+            };
+            ui::Element::new(ui::ElementType::P, Some(text.as_str()))
+                .size(14)
+                .text_color(if st.last_fix.is_some() { C_GREEN } else { C_MUTED })
+        };
+        ui::Element::new(ui::ElementType::Div, None)
+            .flex()
+            .flex_direction(ui::FlexDirection::Column)
+            .gap(8)
+            .margin_top(10)
+            .child(
+                ui::Element::new(
+                    ui::ElementType::P,
+                    Some("附近＝手環依你手機的即時定位顯示周邊 4 站。出門前按一次「手機定位」即可。"),
+                )
+                .size(13)
+                .text_color(C_TEXT),
+            )
+            .child(fix_line)
+            .child(
+                ui::Element::new(ui::ElementType::Div, None)
+                    .flex()
+                    .flex_direction(ui::FlexDirection::Row)
+                    .gap(8)
+                    .child(shortcut_btn)
+                    .child(locate_btn),
+            )
+    } else {
+        ui::Element::new(ui::ElementType::Div, None)
+            .flex()
+            .flex_direction(ui::FlexDirection::Row)
+            .gap(8)
+            .margin_top(10)
+            .child(input)
+            .child(search_btn)
+    };
 
     // Notice
     let notice_el = st.notice.as_ref().map(|n| {
@@ -442,7 +481,7 @@ fn build_ui() -> ui::Element {
         .flex_direction(ui::FlexDirection::Column)
         .gap(6)
         .margin_top(8);
-    for (i, (name, _lat, _lng)) in st.results.iter().enumerate() {
+    for (i, (name, _lat, _lng)) in st.results.iter().enumerate().filter(|_| !is_nearby_tab) {
         let label = name.clone();
         let ev = format!("{}{}", EV_PICK_PREFIX, i);
         results_col = results_col.child(
@@ -462,7 +501,8 @@ fn build_ui() -> ui::Element {
         .text_color(C_TEXT)
         .radius(10)
         .on(ui::Event::Click, EV_PUSH);
-    let clear_btn = ui::Element::new(ui::ElementType::Button, Some("清除目前分頁地點"))
+    let clear_btn_label = if is_nearby_tab { "（附近頁無需清除）" } else { "清除目前分頁地點" };
+    let clear_btn = ui::Element::new(ui::ElementType::Button, Some(clear_btn_label))
         .bg(C_CARD)
         .text_color(C_MUTED)
         .radius(10)

@@ -46,6 +46,8 @@ pub struct AppState {
     pub notice: Option<String>,
     /// Set after launching the GPS shortcut; on next UI render we auto-pull.
     pub awaiting_gps: bool,
+    /// Last phone GPS fix shown on the nearby tab (lat, lng).
+    pub last_fix: Option<(f64, f64)>,
     pub root_element: Option<String>,
     pub registered: bool,
 }
@@ -65,6 +67,7 @@ pub fn state() -> &'static Mutex<AppState> {
             query: String::new(),
             notice: None,
             awaiting_gps: false,
+            last_fix: None,
             root_element: None,
             registered: false,
         })
