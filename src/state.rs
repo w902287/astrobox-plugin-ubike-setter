@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use crate::astrobox::psys_host::{device, interconnect, register};
 
 pub const SCENARIO_NAMES: [&str; 3] = ["住家", "公司", "車站"];
-const CONFIG_PATH: &str = "/data/ubike_setter_config.json";
+/// Relative path — lands inside the WASI preopened plugin-data directory the
+/// AstroBox host hands us (absolute paths like /data are NOT writable).
+const CONFIG_PATH: &str = "./ubike-setter.config.json";
+const LEGACY_CONFIG_PATH: &str = "/data/ubike_setter_config.json";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Coord {
@@ -82,10 +85,18 @@ pub fn load() {
     }
     let cfg = fs::read_to_string(CONFIG_PATH)
         .ok()
+        .or_else(|| fs::read_to_string(LEGACY_CONFIG_PATH).ok())
         .and_then(|s| serde_json::from_str::<Config>(&s).ok())
         .unwrap_or_default();
     let mut st = state().lock().unwrap_or_else(|p| p.into_inner());
     st.config = cfg;
+    let need_migrate = !std::path::Path::new(CONFIG_PATH).exists()
+        && (st.config.coords.iter().any(|c| c.is_some()) || !st.config.loc_key.is_empty());
+    if need_migrate {
+        drop(st);
+        save();
+        st = state().lock().unwrap_or_else(|p| p.into_inner());
+    }
     if st.config.loc_key.is_empty() {
         // pseudo-random 12-char key from time + addresses; good enough for a
         // per-install binding token.
@@ -116,6 +127,7 @@ pub fn save() {
     if let Ok(text) = serde_json::to_string(&cfg) {
         if let Err(err) = fs::write(CONFIG_PATH, text) {
             tracing::warn!("persist failed: {err}");
+            set_notice(format!("設定儲存失敗：{err}（重開外掛會遺失）"));
         }
     }
 }
